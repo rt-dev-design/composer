@@ -8,12 +8,21 @@ import scipy.sparse as sp
 
 
 def build_mlp(input_dim, hidden_dims, output_dim=None, use_batchnorm=False, dropout=0):
+    """
+    Build mlp with optional dropout and batchnorm
+    """
     layers = []
     D = input_dim
+    # 4
+    # dropout and batchnorm for the input
     if dropout > 0:
         layers.append(nn.Dropout(p=dropout))
     if use_batchnorm:
         layers.append(nn.BatchNorm1d(input_dim))
+    
+    # if statement
+    # hidden layers with specified hiddem dimensions
+    # optional dropouts and batchnorms after each layer
     if hidden_dims:
         for dim in hidden_dims:
             layers.append(nn.Linear(D, dim))
@@ -23,6 +32,9 @@ def build_mlp(input_dim, hidden_dims, output_dim=None, use_batchnorm=False, drop
                 layers.append(nn.Dropout(p=dropout))
             layers.append(nn.ReLU(inplace=True))
             D = dim
+    
+    # 2
+    # optinal output layer
     if output_dim:
         layers.append(nn.Linear(D, output_dim))
     return nn.Sequential(*layers)
@@ -52,6 +64,9 @@ class GraphConvolution(nn.Module):
     
     
 def get_joint_graph(num_nodes=17, joint_graph_path='joint_graph.txt'):
+    """
+    get the constant joint graph
+    """
     adj = np.zeros((num_nodes, num_nodes))
     with open(joint_graph_path, 'r') as f:
         lines = f.readlines()

@@ -2,6 +2,10 @@ import os
 
 
 def return_dataset(dataset_name, args, train_model=True):
+    """
+    dataset constructor interface
+    dispatch the construction according to dataset_name and train_model, name and mode
+    """
     if dataset_name == 'volleyball':
         from datasets.volleyball import Volleyball
         if train_model:

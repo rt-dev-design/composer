@@ -3,7 +3,7 @@ exp_name: composer_vd_original
 
 # -- Dataset settings
 dataset_name: collective
-dataset_dir: /common/users/hz289/Dataset/collective
+dataset_dir: /media/disk_4t/xcy/GroupDet/collective
 joints_folder_name: joints
 tracklets_file_name: tracks_normalized.pkl
 person_action_label_file_name: tracks_normalized_with_person_action_label.pkl
@@ -99,10 +99,10 @@ classifier_dropout: 0
 
 # -- Runtime settings
 gpu:
+#  - 0
   - 0
-#   - 1
-#   - 2
-#   - 3
+#  - 2
+#  - 3
 #   - 4
 #   - 5
 #   - 6

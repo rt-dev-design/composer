@@ -74,9 +74,11 @@ def save_checkpoint_best_only(state, dir='checkpoints/', name='checkpoint'):
 
 
 def set_seed(seed):
-    """for reproducibility
-    :param seed:
-    :return:
+    """
+    for reproducibility
+    
+    a comprehensive approach to 
+    setting up a controlled environment for experiments
     """
     np.random.seed(seed)
     random.seed(seed)

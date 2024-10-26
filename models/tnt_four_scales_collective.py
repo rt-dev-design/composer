@@ -26,6 +26,10 @@ class TNT(Module):
         '''
         super(TNT, self).__init__()
         
+        # 2
+        # A TNT is the central part of a Composer, with a Composer = embedding + projection + TNT + classifier
+        # A TNT is essentially a big encoder
+        # consisting of multiple layers of TNT blocks, which are small encoders
         encoder_layer = TNT_Block(args, d_model)
         self.layers = _get_clones(encoder_layer, num_layers)
         
@@ -33,6 +37,8 @@ class TNT(Module):
         self.final_norm = final_norm
         self.return_intermediate = return_intermediate
 
+        # if statement
+        # optional layer norm for final output
         if self.final_norm:
             self.norm_output_fine = LayerNorm(d_model)
             self.norm_output_middle = LayerNorm(d_model)
@@ -56,13 +62,18 @@ class TNT(Module):
         
         intermediate = []
 
+        # for loop
+        # pass the 5 "outputs" through each layer
+        # grab the 7 returned "outputs"
         for mod in self.layers:
             CLS_f, CLS_m, CLS_c, output_CLS, output_fine, output_middle, output_coarse, output_group = mod(
                 output_CLS, output_fine, output_middle, output_coarse, output_group
             )
             if self.return_intermediate:
                 intermediate.append([CLS_f, CLS_m, CLS_c, output_CLS, output_fine, output_middle, output_coarse, output_group])
-                
+        
+        # if statement
+        # optional layer norm pass
         if self.final_norm is not None:
             CLS_f = self.norm_output_fine(CLS_f)
             CLS_m = self.norm_output_middle(CLS_m)
@@ -76,7 +87,10 @@ class TNT(Module):
             if self.return_intermediate:
                 intermediate.pop()
                 intermediate.append([CLS_f, CLS_m, CLS_c, output_CLS, output_fine, output_middle, output_coarse, output_group])
-                
+        
+        # if-else
+        # return intermediate TNT block outputs
+        # or only the final TNT block output       
         if self.return_intermediate:
             return intermediate
         else:
@@ -87,6 +101,12 @@ class TNT(Module):
 
 class TNT_Block(Module):
     def __init__(self, args, d_model):
+        # __init__, TNT block
+        # organizing transformer layers into a TNT block
+        # with feature aggregation and integration in between
+        # !!! for all transformer encoder layers, batch first is false
+        # (seq, batch, feature)
+        
         super(TNT_Block, self).__init__()
         
         self.inner_tblock = TransformerEncoderLayer(
@@ -120,11 +140,19 @@ class TNT_Block(Module):
         coarse: (C, B, d)
         group: (2, B, d)
         '''
-         
+        # 3
+        # augment CLS and fine (joints)
+        # details:
+        # torch.cat yields token batch of shape (1 + F, B, d)
+        # output_inner[0, :, :] yields CLS of shape (B, d), hence unsqueeze needed
+        # output_inner[1:, :, :] yields fine of shape (F, B, d) directly
         output_inner = self.inner_tblock(torch.cat([CLS, fine], dim=0))
         CLS_f = output_inner[0, :, :].unsqueeze(0)
         output_fine = output_inner[1:, :, :]
         
+        # 4
+        # aggregate augmented fine into middle and integrate it with input middle
+        # augment CLS and middle
         middle_update = middle + self.inner2middle(output_fine.transpose(0, 1)).transpose(0, 1)
         output_middle = self.middle_tblock(torch.cat([CLS_f, middle_update], dim=0))
         CLS_m = output_middle[0, :, :].unsqueeze(0)

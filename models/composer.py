@@ -15,28 +15,81 @@ import pdb
 
 class COMPOSER(nn.Module):
     def __init__(self, args):
+        """
+        Initialize the COMPOSER model.
+        Parameters:
+            args (Namespace): A namespace containing various configuration parameters for the model, including:
+                - N (int): Number of nodes.
+                - joint_initial_feat_dim (int): Dimension of the initial joint features.
+                - J (int): Number of joint classes.
+                - num_gcn_layers (int): Number of Graph Convolutional Network layers.
+                - max_num_tokens (int): Maximum number of tokens for embedding.
+                - TNT_hidden_dim (int): Hidden dimension for the TNT model.
+                - max_times_embed (int): Maximum time embeddings.
+                - projection_batchnorm (bool): Whether to use batch normalization in projection layers.
+                - projection_dropout (float): Dropout rate for projection layers.
+                - dataset_name (str): Name of the dataset (e.g., 'volleyball', 'collective').
+                - ball_trajectory_use (bool): Flag to indicate if ball trajectory should be used.
+                - nmb_prototypes (int): Number of prototypes for classification.
+                - num_classes (int): Number of action classes for classification.
+                - num_person_action_classes (int): Number of action classes for person classification.
+                - T (int): Temporal dimension for the input data.
+                - joint2person_feat_dim (int): Dimension of features from joint to person.
+        Attributes:
+            interaction_indexes (list): List of interaction indexes for the model.
+            joint_class_embed_layer (nn.Embedding): Embedding layer for joint classes.
+            joint_class_gcn_layers (nn.Sequential): Sequential layers of Graph Convolution.
+            adj (Tensor): Adjacency matrix for the joint graph.
+            special_token_embed_layer (nn.Embedding): Embedding layer for special tokens.
+            time_embed_layer (PositionEmbeddingAbsoluteLearned_1D): Time embedding layer.
+            image_embed_layer (LearnedFourierFeatureTransform): Image feature transformation layer.
+            joint_track_projection_layer (nn.Sequential): MLP for joint track projection.
+            person_track_projection_layer (nn.Sequential): MLP for person track projection.
+            interaction_track_projection_layer (nn.Sequential): MLP for interaction track projection.
+            person_to_group_projection (nn.Sequential): MLP for projecting person to group (if applicable).
+            ball_track_projection_layer (nn.Sequential): MLP for ball track projection (if applicable).
+            TNT (TNT): TNT model for processing temporal data.
+            classifier (nn.Sequential): MLP for action classification.
+            person_classifier (nn.Sequential): MLP for person action classification.
+            prototypes (nn.Linear): Linear layer for prototypes.
+        """
         super(COMPOSER, self).__init__()
         
         self.args = args
         
+        # 3
+        # essentially the N * N matrix, 
+        # without the diagonal and flattened
         self.interaction_indexes = [
             self.args.N*i+j for i in range(self.args.N) 
             for j in range(self.args.N) if self.args.N*i+j != self.args.N*i+i]
-         
+        
+        # 2
+        # embed joint features from shape J to embedding_dim
         embedding_dim = args.joint_initial_feat_dim
         self.joint_class_embed_layer = nn.Embedding(args.J, embedding_dim)
+        
+        # 4
+        # a sequence of gcn layers
+        # embedding_dim to embedding_dim
         gcn_layers = [
             GraphConvolution(in_features=embedding_dim, out_features=embedding_dim,
                              dropout=0, act=F.relu, use_bias=True) 
             for l in range(self.args.num_gcn_layers)] 
         self.joint_class_gcn_layers = nn.Sequential(*gcn_layers)
 
+        # 1
+        # 17 by 17 adj matrix of the joint graph
+        # a constant
         self.adj = get_joint_graph(num_nodes=args.J, joint_graph_path='models/joint_graph.txt')
         
+        # 3
         self.special_token_embed_layer = nn.Embedding(args.max_num_tokens, args.TNT_hidden_dim)
         self.time_embed_layer = PositionEmbeddingAbsoluteLearned_1D(args.max_times_embed, embedding_dim)
         self.image_embed_layer = LearnedFourierFeatureTransform(2, embedding_dim // 2)
         
+        # 6
+        # T * embedding_dim
         # joint track projection layer
         self.joint_track_projection_layer = build_mlp(input_dim=args.T*embedding_dim*4, 
                                                 hidden_dims=[args.TNT_hidden_dim], 
@@ -110,6 +163,21 @@ class COMPOSER(nn.Module):
          
     def forward(self, joint_feats_thisbatch, ball_feats_thisbatch):
         
+        # method
+        # joint_feats_this batch is of shape (B, N, J, T, 11)
+        # so we have a table of clips with B rows or B items
+        # each item has N * J spatial objects
+        # each object has T temporal records
+        # each record is a feature of length 11
+        # the 11 items are
+        # joint_x, joint_y, joint_dx, joint_dy, all standardized
+        # joint_oks_this_joint, joint_oks_this_person
+        # normalized_joint_x, normalized_joint_y, joint_type, normalized meaning person-wise normalization
+        # joint_x, joint_y, with only sanity check and not normalized or standardized
+        # this comment is from collective.py
+        # this method process this batch by:
+        # embedding the features part by part
+        
         B = joint_feats_thisbatch.size(0)
         N = joint_feats_thisbatch.size(1)
         J = joint_feats_thisbatch.size(2)
@@ -119,31 +187,55 @@ class COMPOSER(nn.Module):
         
         device = joint_feats_thisbatch.device
         
+        # 1
+        # features for person: joint_x, joint_y, standardized
+        # the first 2 of the 11
         joint_feats_for_person_thisbatch = joint_feats_thisbatch[:,:,:,:,:self.args.joint2person_feat_dim]
         joint_img_coords = joint_feats_thisbatch[:,:,:,:,-2:]
-          
+        
+        # 7
         # image coords positional encoding
+        # by first making a encoded grid using the embedding layer
+        # and transform in batch using this grid
+        # image coords, last 2 of 11 -> image coords embedded
+        # 2-5:
+        # make a batch of one grid for processing of shape:
+        # (1, 2, H, W) -> values from 0 to 1
+        # essentailly batch, channel, height, width
+        # 6: 
+        # get embedding grid of shape (H, W, D)
+        # 7:
+        # transform actual coords to embeddings using the output embedding for the grid
         image_coords = joint_feats_thisbatch[:,:,:,:,-2:].to(torch.int64).cuda()
         coords_h = np.linspace(0, 1, self.args.image_h, endpoint=False)
         coords_w = np.linspace(0, 1, self.args.image_w, endpoint=False)
         xy_grid = np.stack(np.meshgrid(coords_w, coords_h), -1)
         xy_grid = torch.tensor(xy_grid).unsqueeze(0).permute(0, 3, 1, 2).float().contiguous().to(device)
         image_coords_learned =  self.image_embed_layer(xy_grid).squeeze(0).permute(1, 2, 0)
+        # 1
+        # transforming joint_x_row and joint_y_raw into a vector of 8 slots
         image_coords_embeded = image_coords_learned[image_coords[:,:,:,:,1], image_coords[:,:,:,:,0]]
         # (B, N, J, T, d_0)
         
         # update by joint_feats_thisbatch removing the raw joint coordinates dim (last 2 dims by default)
         joint_feats_thisbatch = joint_feats_thisbatch[:,:,:,:,:-2]  
 
-            
+        # 2  
         # time positional encoding
+        # (B, N, J, T), value time index -> (B, N, J, T, 8), 8 is the time embedding dimension
+        # making 8 slots for time features out of thin air
         time_ids = torch.arange(1, T+1, device=device).repeat(B, N, J, 1)
         time_seq = self.time_embed_layer(time_ids) 
         
+        # 6
+        # transforming the joint class into a vector of 8 slots
+        # 2
+        # # (B, N, J, T, d_0)
         # joint classes embedding learning as tokens/nodes
         joint_class_ids = joint_feats_thisbatch[:,:,:,:,-1]  # note that the last dim is the joint class id by default
-        joint_classes_embeded = self.joint_class_embed_layer(joint_class_ids.type(torch.LongTensor).cuda()) # (B, N, J, T, d_0)
-        
+        joint_classes_embeded = self.joint_class_embed_layer(joint_class_ids.type(torch.LongTensor).cuda()) 
+        # 4
+        # using gcn to enhance the encoded joint type with the joint graph
         x = joint_classes_embeded.transpose(2, 3).flatten(0, 1).flatten(0, 1)  # x: (B*N*T, J, d_0)
         input = (x, self.adj.repeat(B*N*T, 1, 1).cuda())  # adj: # (B*N*T, J, J)
         joint_classes_encode = self.joint_class_gcn_layers(input)[0]
@@ -152,17 +244,22 @@ class COMPOSER(nn.Module):
         # update by joint_feats_thisbatch removing the joint class dim (last dim by default)
         joint_feats_thisbatch = joint_feats_thisbatch[:,:,:,:,:-1]
             
-
+        # 2
+        # make a clip-level token, 128 long
         # CLS initial embedding
         CLS_id = torch.arange(1, device=device).repeat(B, 1)
         CLS = self.special_token_embed_layer(CLS_id)
 
-        
+        # 3
+        # (B, N, J, T, len)
+        # len = 11 - 3 + 8 + 8 + 8
         joint_feats_composite_encoded = torch.cat(
             [joint_feats_thisbatch, time_seq, image_coords_embeded, joint_classes_encode], 
             dim=-1) 
         
-        
+        # 3
+        # track/clip tokens for each joint
+        # (B, N, J, T, 32) value -> (B, N * J, 128)
         # PROJECTIONS
         # joint track projection
         joint_track_feats_thisbatch_proj = self.joint_track_projection_layer(
@@ -170,12 +267,18 @@ class COMPOSER(nn.Module):
         ).view(B, N*J, -1)
         # (B, N*J, d)
         
+        # 3
+        # (B, N, J, T, 2) value -> (B, N, 128) value
+        # concatenating all joints cross all frames
         # person track projection
         person_track_feats_thisbatch_proj = self.person_track_projection_layer(
             joint_feats_for_person_thisbatch.flatten(0, 1).contiguous().view(B*N, -1)
         ).view(B, N, -1)
         # (B, N, d)
         
+        # to 286
+        # interation tokens
+        # (B, N*(N - 1), 128) value
         # form sequence of person-person-interaction-track tokens
         tem1 = person_track_feats_thisbatch_proj.repeat(1, N, 1).reshape(B,N,N,d).transpose(1, 2).flatten(1, 2)  # (B, N^2, d)
         tem2 = person_track_feats_thisbatch_proj.repeat(1, N, 1) # (B, N^2, d)

@@ -3,7 +3,7 @@ exp_name: composer_vd_original
 
 # -- Dataset settings
 dataset_name: volleyball
-dataset_dir: /common/users/hz289/Dataset/volleyball
+dataset_dir: /media/disk_4t/xcy/GroupDet/volleyball
 olympic_split: False
 ball_trajectory_use: True
 joints_folder_name: joints

@@ -63,6 +63,10 @@ OKS_sigmas = np.array([.26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.
 
 
 def oks_one_keypoint_compute(keypoint, keypoint_prev, box, box_prev, require_norm=False, OW=720.0, OH=1280.0):
+    # essentially a keypoint estimation metric
+    # used here as a metric for the smilarity of two keypoints
+    # of the same person and the same type across two consecutive frames
+    
     # Arguments:
     # - keypoint: (3,) - x, y, type 
     # - keypoint_prev: (3,) - x, y, type, this keypoint in previous frame
@@ -103,16 +107,62 @@ def oks_one_keypoint_compute(keypoint, keypoint_prev, box, box_prev, require_nor
 
 
 class Collective(Dataset):
+    """
+    collective dataset
+    essentially a set/list/collection of "data points"
+    init: loading, preprocessing, augmenting the specified split (train or test) of the dataset
+    access: __len__ and __getitem__, provided mainly for torch's DataLoader
+    """
     def __init__(self, args, split='train', print_cls_idx=True):
+        """
+        Initializes the collective dataset for group activity recognition.
+        all things are collective related but also conform to sort of a tabular form
+        "constants" are created and set right here 
+        almost all "columns" are declared here,
+        but the actual loading, preprocessing and augmenting are delegated to methods
+        
+        constants are labels that correspond to multiple values in a specific column
+        columns are like columns in a table, represented as lists dicts/lists here
+        here, each column is some track in a clip, with each clip being a row
+        key-value, index-element
+        Parameters:
+            split is the single most important parameter here
+            args is thrown around all over the place and print_cls_indx is just a flag for some detail
+        Attributes:
+            "constants"
+            dataset_splits (dict): Dictionary mapping split names to their corresponding video indices.
+            idx2class (dict): Mapping of class indices to class names.
+            class2idx (dict): Mapping of class names to class indices.
+            group_activities_weights (Tensor): Weights for group activities, for training, related to dataset statistics
+            person_actions_weights (Tensor): Weights for person actions.
+            FRAMES_SIZE (dict): Dictionary mapping video indices to their respective frame sizes.
+            
+            "columns"
+            person_actions_all (list): List of all person actions loaded from the dataset.
+            annotations (list): List to store annotations for the dataset.
+            annotations_each_person (list): List to store annotations for each person.
+            clip_joints_paths (list): List to store paths for clip joints.
+            clips (list): List to store clips.
+            annotations_CAD (list): List of CAD annotations loaded from the dataset.
+            horizontal_flip_augment_joint_randomness (dict): Randomness for horizontal flip augmentation.
+            horizontal_move_augment_joint_randomness (dict): Randomness for horizontal move augmentation.
+            vertical_move_augment_joint_randomness (dict): Randomness for vertical move augmentation.
+            agent_dropout_augment_randomness (dict): Randomness for agent dropout augmentation.
+            tdata (list): Tracklet data loaded from the dataset.
+        """
         self.args = args
         self.split = split
         
-        self.dataset_splits = {
-            'train': [1, 2, 3, 4, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 
-                      30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44],
-            'test': [5,6,7,8,9,10,11,15,16,25,28,29]
-        }
+        # self.dataset_splits = {
+        #     'train': [1, 2, 3, 4, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 
+        #               30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44],
+        #     'test': [5,6,7,8,9,10,11,15,16,25,28,29]
+        # }
         
+        self.dataset_splits = {
+            'train': [1],
+            'test': [5]
+        }
         
         # activities
         self.idx2class = {
@@ -130,7 +180,11 @@ class Collective(Dataset):
                 print('{}: {}'.format(self.idx2class[k], k))
         self.group_activities_weights = torch.FloatTensor([0.5, 3.0, 2.0, 1.0]).cuda()
         # ACTIVITIES = ['Walking', 'Waiting', 'Queueing', 'Talking']    
-                    
+        
+        # 2
+        # person_actions_all
+        # key - (video_id, clip_id)
+        # value - array (frames, people, action)            
         self.person_actions_all = pickle.load(
             open(os.path.join(self.args.dataset_dir, self.args.person_action_label_file_name), "rb"))
         self.person_actions_weights = torch.FloatTensor([0.5, 1.0, 4.0, 3.0, 2.0]).cuda()
@@ -142,17 +196,33 @@ class Collective(Dataset):
              31: (480, 720), 32: (480, 720), 33: (480, 720), 34: (480, 720), 35: (480, 720), 36: (480, 720), 37: (480, 720), 38: (480, 720), 39: (480, 720), 40: (480, 720), 
              41: (480, 720), 42: (480, 720), 43: (480, 720), 44: (480, 720)}
         
+        # 4
+        # according to prepare()
+        # for each clip
+        # annotations - group activity label
+        # annotations_each_person - person action track
+        # clip_joints_paths - path to person joints track
+        # clips - (video_id, clip_id) array
         self.annotations = []
         self.annotations_each_person = []
         self.clip_joints_paths = []
         self.clips = []
         
+        # 2
+        # annotations_CAD
+        # key - video_id, clip_id, frame_id, 3 dicts
+        # value - frame_id, group_activity, actions, bboxes
+        # essentially contents of a key frame
+        # take video_id, clip_id as key so we can still view each clip as a row
         self.annotations_CAD = pickle.load(
             open(os.path.join(self.args.dataset_dir, 'annotations.pkl'), "rb"))
         
         
         self.prepare(args.dataset_dir)
-            
+        
+        # to 227, 4 blocks
+        # set up so called randomness dict for augmentation
+        # set up these dicts for the call of collect_standardization_stats
         if self.args.horizontal_flip_augment and self.split == 'train':
             if self.args.horizontal_flip_augment_purturb:
                 self.horizontal_flip_augment_joint_randomness = dict()
@@ -167,7 +237,9 @@ class Collective(Dataset):
             
         if self.args.agent_dropout_augment:
             self.agent_dropout_augment_randomness = dict()
-            
+
+        # collect or load statistics, possibly those after augmentation
+        # if collect, statistics and/or augmentation randomness are saved
         self.collect_standardization_stats()
         
         self.tdata = pickle.load(
@@ -208,6 +280,12 @@ class Collective(Dataset):
         assert len(self.clip_joints_paths) == len(self.clips)
         # pdb.set_trace()
 
+        # to the end of prepare()
+        # part of data augmentation
+        # this snippet does the following
+        # for each augmentation action
+        #   append a copy of true data to the end of the column
+        #   make a mask for this action
         true_data_size = len(self.annotations)
         true_annotations = copy.deepcopy(self.annotations)
         true_annotations_each_person = copy.deepcopy(self.annotations_each_person)
@@ -248,6 +326,7 @@ class Collective(Dataset):
             
     
     def __len__(self):
+        # including the augmented data
         return len(self.clip_joints_paths)
     
     
@@ -369,8 +448,35 @@ class Collective(Dataset):
 
             
     def collect_standardization_stats(self):
+        """
+        Computing Statistics:
+        the mean and standard deviation of joint x and y coordinates
+        their deltas (dx and dy) over the training set
+        It also handles augmentation and collect the statistics after augmentation
+        The computed statistics and/or augmentation randomness are saved to a pickle file for later use.
+        Attributes:
+            Using attributes declared and prepared in prepare()
+            self.split (str): Indicates the dataset split (e.g., 'train').
+            self.args: Contains various arguments including dataset name, joints folder name, and augmentation flags.
+            self.clip_joints_paths (list): Paths to the joint data for each clip.
+            self.horizontal_flip_mask (list): Masks indicating which clips have horizontal flip augmentation.
+            self.horizontal_move_mask (list): Masks for horizontal move augmentation.
+            self.vertical_mask (list): Masks for vertical move augmentation.
+            self.agent_dropout_mask (list): Masks for agent dropout augmentation.
+            self.horizontal_flip_augment_joint_randomness (dict): Stores randomness for horizontal flip augmentation.
+            self.horizontal_move_augment_joint_randomness (dict): Stores randomness for horizontal move augmentation.
+            self.vertical_move_augment_joint_randomness (dict): Stores randomness for vertical move augmentation.
+            self.agent_dropout_augment_randomness (dict): Stores randomness for agent dropout augmentation.
+            self.stats (dict): Dictionary to store computed statistics.
+        Returns:
+            None
+        """
         # get joint x/y mean, std over train set
         if self.split == 'train':
+            # 2, if statement
+            # if forced recollect specified or 
+            # stats not found at all, 
+            # do collect
             if self.args.recollect_stats_train or (
                 not os.path.exists(os.path.join('datasets', self.args.dataset_name, self.args.joints_folder_name, 'stats_train.pickle'))):
                 joint_xcoords = []
@@ -378,16 +484,25 @@ class Collective(Dataset):
                 joint_dxcoords = []
                 joint_dycoords = [] 
 
+                # 1, for loop
+                # for the number rows
+                # for all the clips including the augmented data
                 for index in range(self.__len__()):   # including augmented data!
+                    # 3
+                    # load the clip person joint tracks for a clip from file
+                    # sample the first 10 frames (actually all the frames in collective) in a sorted list
+                    # so this for body has to do with one clip, either statistics or augmentation
                     with open(self.clip_joints_paths[index] , 'rb') as f:
-                        joint_raw = pickle.load(f)
-                        
+                        joint_raw = pickle.load(f)   
                     frames = sorted(joint_raw.keys())[self.args.frame_start_idx:self.args.frame_end_idx+1:self.args.frame_sampling]
                     
                     # if horizontal flip augmentation and is training
                     if self.args.horizontal_flip_augment:
                         if index < len(self.horizontal_flip_mask):
                             if self.horizontal_flip_mask[index]:
+                                # if body
+                                # prepare the attributes and arguments 
+                                # and call the augmentation method
                                 if self.args.horizontal_flip_augment_purturb:
                                     self.horizontal_flip_augment_joint_randomness[index] = defaultdict()
                                     joint_raw = self.horizontal_flip_augment_joint(
@@ -435,8 +550,12 @@ class Collective(Dataset):
                     (video, clip) = self.clips[index]
                     joint_raw = self.joints_sanity_fix(joint_raw, frames, video_id=int(video))
                     
-
+                    # for loop
+                    # for every frame in this clip in the order of time
                     for tidx, frame in enumerate(frames):
+                        # for body
+                        # collect x coordinates and y coordinateds
+                        # collect dx and dy
                         joint_xcoords.extend(joint_raw[frame][:,:,0].flatten().tolist())
                         joint_ycoords.extend(joint_raw[frame][:,:,1].flatten().tolist())
 
@@ -486,7 +605,10 @@ class Collective(Dataset):
                     with open(os.path.join('datasets', self.args.dataset_name, self.args.joints_folder_name, 
                                            'agent_dropout_augment_randomness.pickle'), 'wb') as f:
                         pickle.dump(self.agent_dropout_augment_randomness, f)
-                    
+            # else 
+            # if forced recollect no specified or stats found      
+            # load statistics
+            # check necessity and load other things from respective files  
             else:
                 try:
                     with open(os.path.join('datasets', self.args.dataset_name, self.args.joints_folder_name, 'stats_train.pickle'), 'rb') as f:
@@ -515,6 +637,9 @@ class Collective(Dataset):
                                            'agent_dropout_augment_randomness.pickle'), 'rb') as f:
                         self.agent_dropout_augment_randomness = pickle.load(f)
         else:
+            # else block
+            # else means it is currently in testing mode
+            # load statistics generated from training from file into self.stats
             try:
                 with open(os.path.join('datasets', self.args.dataset_name, self.args.joints_folder_name, 'stats_train.pickle'), 'rb') as f:
                     self.stats = pickle.load(f)
@@ -524,15 +649,34 @@ class Collective(Dataset):
                 
                 
     def joints_sanity_fix(self, joint_raw, frames, video_id=None):
+        """
+        Fixes the joint coordinates in the raw joint data to ensure they are within valid bounds.
+        Parameters:
+            joint_raw (numpy.ndarray): The raw joint data with shape (T, N, J, 2), where T is the number of frames,
+                                       N is the number of persons, J is the number of joints, and 2 represents
+                                       the x and y coordinates.
+            frames (int): The total number of frames in the video.
+            video_id (int, optional): The ID of the video to reference specific frame sizes. If None, uses
+                                       default image dimensions from args.
+        Returns:
+            numpy.ndarray: The modified joint_raw with coordinates adjusted to be within valid bounds and
+                           padded to ensure a consistent number of persons across frames.
+        """
         # note that it is possible the width_coords>1280 and height_coords>720 due to imperfect pose esitimation
         # here we fix these cases
         
+        # for loop
+        # for each frame with key t in a clip
         for t in joint_raw:
+            # for loop, n being person index
             for n in range(len(joint_raw[t])):
+                # for loop, j being joint id
                 for j in range(len(joint_raw[t][n])):
                     # joint_raw[t][n, j, 0] = int(joint_raw[t][n, j, 0])
                     # joint_raw[t][n, j, 1] = int(joint_raw[t][n, j, 1])
                     
+                    # for body
+                    # bound one joint
                     if video_id != None:
                         if joint_raw[t][n, j, 0] >= self.FRAMES_SIZE[video_id][1]:
                             joint_raw[t][n, j, 0] = self.FRAMES_SIZE[video_id][1] - 1
@@ -559,6 +703,8 @@ class Collective(Dataset):
                             joint_raw[t][n, j, 1] = 0 
                         
         # modify joint_raw - loop over each frame and pad the person dim because it can have less than N persons
+        # for loop
+        # for every frame f in the clip
         for f in joint_raw:
             n_persons = joint_raw[f].shape[0]
             if n_persons < self.args.N:  # padding in case some clips has less than N persons
@@ -571,38 +717,69 @@ class Collective(Dataset):
     
     def horizontal_flip_augment_joint(
         self, joint_raw, frames, add_purturbation=False, randomness_set=False, index=0, video_id=None):
+        """
+        Horizontally flips joint coordinates for data augmentation.
+
+        Parameters:
+            joint_raw (numpy.ndarray): The raw joint coordinates for the frames.
+            frames (list): A list of frame indices to process.
+            add_purturbation (bool, optional): Whether to add perturbation to the flipped joints. Defaults to False.
+            randomness_set (bool, optional): Indicates if randomness has been set for perturbation. Defaults to False.
+            index (int, optional): The index used for storing randomness values. Defaults to 0.
+            video_id (int, optional): The ID of the video being processed. If None, uses default image width. Defaults to None.
+
+        Returns:
+            numpy.ndarray: The modified joint coordinates after horizontal flipping and optional perturbation.
+        """
+        # for loop, frame
         for t in frames:
+            # for loop, person
             for n in range(len(joint_raw[t])):
                 if not np.any(joint_raw[t][n][:,:2]):  # all 0s, not actual joint coords
                     continue
+                # for loop, joint, [x, y, class]
                 for j in range(len(joint_raw[t][n])):
+                    # for body
+                    # flip one joint
+                    
+                    # if-else statement
+                    # check if specific video data specified 
+                    # use it or use default
+                    # do flip transformation
                     if video_id != None:
                         joint_raw[t][n, j, 0] = self.FRAMES_SIZE[video_id][1] - joint_raw[t][n, j, 0]  # flip joint coordinates
                     else:
                         joint_raw[t][n, j, 0] = self.args.image_w - joint_raw[t][n, j, 0]  # flip joint coordinates
+                    
                     if add_purturbation:
                         if not randomness_set:
+                            # (clip, frame, person, joint), value is the perbutation
                             self.horizontal_flip_augment_joint_randomness[index][(t, n, j)] = random.uniform(
                                 -KEYPOINT_PURTURB_RANGE, KEYPOINT_PURTURB_RANGE)
                         joint_raw[t][n, j, 0] += self.horizontal_flip_augment_joint_randomness[index][(t, n, j)]
                     joint_raw[t][n, j, 2] = COCO_KEYPOINT_HORIZONTAL_FLIPPED[joint_raw[t][n, j, 2]]  # joint class type has to be flipped
-                joint_raw[t][n] = joint_raw[t][n][joint_raw[t][n][:, 2].argsort()]  # sort by joint type class id
+                joint_raw[t][n] = joint_raw[t][n][joint_raw[t][n][:, 2].argsort()]  # sort joints by joint type class id
         return joint_raw
     
     
     def horizontal_move_augment_joint(
         self, joint_raw, frames, add_purturbation=False, randomness_set=True, index=0, max_horizontal_diff=10.0, ball_trajectory=None):
         horizontal_change = np.random.uniform(low=-max_horizontal_diff, high=max_horizontal_diff)
+        # for loop, t is frame index
         for t in frames:
+            # for loop, n is person index
             for n in range(len(joint_raw[t])):
                 if not np.any(joint_raw[t][n][:,:2]):  # all 0s, not actual joint coords
                     continue
+                # for loop, j is joint index
                 for j in range(len(joint_raw[t][n])):
+                    # for body, move the x for one joint
                     joint_raw[t][n, j, 0] += horizontal_change  # horizontally move joint 
                     if add_purturbation:
                         if not randomness_set:
                             self.horizontal_move_augment_joint_randomness[index][(t, n, j)] = random.uniform(
                                 -KEYPOINT_PURTURB_RANGE, KEYPOINT_PURTURB_RANGE)
+                        # so for every joint there may be some randomness
                         joint_raw[t][n, j, 0] += self.horizontal_move_augment_joint_randomness[index][(t, n, j)]
         if ball_trajectory is not None:
             for t in range(len(ball_trajectory)):
@@ -645,7 +822,30 @@ class Collective(Dataset):
     
     
     def __getitem__(self, index):
+        """
+        Retrieve a single clip from the dataset.
+        Essentially collect the values from various columns using the index.
+        Args:
+            index (int): The index of the clip to retrieve.
+            self has the prepared columns.
+        Returns:
+            tuple: A tuple containing:
+                - video (str): The video identifier.
+                - clip (str): The clip identifier.
+                - label (any): The label associated with the item.
+                - person_labels (torch.LongTensor): The labels for each person in the frame.
+                - joint_feats_basic (list): Basic joint features normalized.
+                - joint_feats_advanced (list): Advanced joint features normalized.
+                - joint_feats_metrics (np.ndarray): Joint metric features aggregated by person.
+        Raises:
+            FileNotFoundError: If the joint features file cannot be found.
+            IndexError: If the index is out of bounds for the dataset.
+        """
         # index = 0
+        # 4
+        # retrieve from column lists
+        # joint features path, clip primary key, group label, person labels
+        # person_labels: (frame, person, action_singleton), float value representing action label
         current_joint_feats_path = self.clip_joints_paths[index] 
         (video, clip) = self.clips[index]
         label = self.annotations[index]
@@ -655,12 +855,21 @@ class Collective(Dataset):
         # joint_raw: T: (N, J, 3)
         # 3: [joint_x, joint_y, joint_type]
         
+        # 1
+        # sample frames to process
+        # frames contains the keys of the sampled frames into joint_raw
         frames = sorted(joint_raw.keys())[self.args.frame_start_idx:self.args.frame_end_idx+1:self.args.frame_sampling]
-                        
+
+        # 1
+        # every person has the same action across a clip
         person_labels = torch.LongTensor(person_labels[frames[0]].squeeze())  # person action remains to be the same across all frames 
         # person_labels: (N, )
         
+        # if statement
         # if horizontal flip augmentation and is training
+        # if this clip is within range to be flipped
+        # if perturb do perturb else only do flip
+        # when doing perturbing at load time the randomness is certain to have been set so we use it directly
         if self.args.horizontal_flip_augment and self.split == 'train':
             if index < len(self.horizontal_flip_mask):
                 if self.horizontal_flip_mask[index]:
@@ -689,12 +898,16 @@ class Collective(Dataset):
                             joint_raw, frames, add_purturbation=True, randomness_set=True, index=index)
                     else:
                         joint_raw = self.vertical_move_augment_joint(joint_raw, frames)                  
-                    
+        
+        # 1
+        # every time after augmentation we do sanity check            
         joint_raw = self.joints_sanity_fix(joint_raw, frames, video_id=int(video))
         
         
         # get joint_coords_all for image coordinates embdding
         if self.args.image_position_embedding_type != 'None':
+            # 1
+            # eventual joint_coords_all: (N, J, T, 2)
             joint_coords_all = []
             for n in range(self.args.N):
                 joint_coords_n = []
@@ -717,11 +930,17 @@ class Collective(Dataset):
                         joint_coords.append(joint_y)  # height axis
                             
                         joint_coords_j.append(joint_coords)
+                    
                     joint_coords_n.append(joint_coords_j)   
                 joint_coords_all.append(joint_coords_n)
                 
                 
         # get basic joint features (std normalization)
+        # 1
+        # joint_feats_basic: (N, J, T, 4)
+        # the 4 element in the last dimension: 
+        # [joint_x, joint_y, joint_dx, joint_dy]
+        # all standardized
         joint_feats_basic = []  # (N, J, T, d_0_v1)
 
         for n in range(self.args.N):
@@ -751,7 +970,8 @@ class Collective(Dataset):
                 joint_feats_n.append(joint_feats_j)
             joint_feats_basic.append(joint_feats_n)
                 
-            
+        # 1
+        # (N, J, T, 3)
         # person-wise normalization
         joint_feats_advanced = []  # (N, J, T, d_0_v2)
 
@@ -780,7 +1000,9 @@ class Collective(Dataset):
                     joint_feats_j.append(joint_feat)
                 joint_feats_n.append(joint_feats_j)
             joint_feats_advanced.append(joint_feats_n)
-            
+        # 1
+        # joint_feats_metrics shape: (T, N, J, d_metrics_singleton)
+        # essentially computing the OKS score of something in the current frame with the previous frame
         # adding joint metric features
         joint_feats_metrics = []  # (N, J, T, d_metrics)
         for frame_idx, frame in enumerate(frames):  # loop over frames of this clip
@@ -802,7 +1024,14 @@ class Collective(Dataset):
                 this_frame_metric_scores.append(this_player_metric_scores)
             joint_feats_metrics.append(this_frame_metric_scores)
         joint_feats_metrics = np.array(joint_feats_metrics) # (T, N, J, 2) or  # (T, N, J, 1)
-
+        
+        # 4
+        # person_agg shape: (T, N, person_metric_singleton) or (T, N, 1)
+        # joint_feats_metrics is transformed to be of shape (T, N, J, 2)
+        # where the second of "2" is the person_agg average
+        # implementation details:
+        # np.tile extends the last dim, which amounts to person_agg being of shape (T, N, J)
+        # [:,:,:,np.newaxis] amounts to person_agg being of shape (T, N, J, 1)
         # mean aggregate by a person's joints
         person_agg = np.mean(joint_feats_metrics, axis=2)
         joint_feats_metrics = np.concatenate(
@@ -810,7 +1039,13 @@ class Collective(Dataset):
              np.tile(person_agg, self.args.J)[:,:,:,np.newaxis]), axis=-1)
 
         
-        
+        # 4
+        # joint_feats is of shape (N, J, T, 11)
+        # the "11" items are
+        # joint_x, joint_y, joint_dx, joint_dy, all standardized
+        # joint_oks_this_joint, joint_oks_this_person
+        # normalized_joint_x, normalized_joint_y, joint_type, normalized meaning person-wise normalization
+        # joint_x, joint_y with only sanity check and not normalized or standardized
         joint_feats = torch.cat((torch.Tensor(np.array(joint_feats_basic)), 
                                  torch.Tensor(np.array(joint_feats_metrics)).permute(1,2,0,3), 
                                  torch.Tensor(np.array(joint_feats_advanced)), 
