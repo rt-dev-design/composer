@@ -64,7 +64,7 @@ class TNT(Module):
 
         # for loop
         # pass the 5 "outputs" through each layer
-        # grab the 7 returned "outputs"
+        # grab the 8 returned "outputs"
         for mod in self.layers:
             CLS_f, CLS_m, CLS_c, output_CLS, output_fine, output_middle, output_coarse, output_group = mod(
                 output_CLS, output_fine, output_middle, output_coarse, output_group
@@ -168,6 +168,9 @@ class TNT_Block(Module):
         CLS_g = output_group[0, :, :].unsqueeze(0)
         output_group = output_group[1:, :, :]
         
+        # 1
+        # 4 augmented CLS outputs from 4 scales
+        # 4 sets of augmented features from 4 scales
         return CLS_f, CLS_m, CLS_c, CLS_g, output_fine, output_middle, output_coarse, output_group
 
 

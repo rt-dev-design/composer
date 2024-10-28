@@ -140,6 +140,23 @@ class Trainer():
             
     @torch.no_grad()
     def test(self, epoch):
+        """
+        Test the model on the validation dataset.
+        This method evaluates the model's performance on the test set for a given epoch.
+        It computes various metrics including loss, top-1 accuracy, and top-3 accuracy for both 
+        the overall predictions and person-specific predictions. The results are logged for each 
+        batch processed.
+        Parameters:
+            epoch (int): The current epoch number.
+        Returns:
+            tuple: A tuple containing:
+                - top1_avg (float): Average top-1 accuracy across the test set.
+                - top3_avg (float): Average top-3 accuracy across the test set.
+                - top1_person_avg (float): Average top-1 accuracy for person-specific predictions.
+                - top3_person_avg (float): Average top-3 accuracy for person-specific predictions.
+                - loss_avg (float): Average loss across the test set.
+                - results (dict): A dictionary containing predictions and ground truth for each video-clip pair.
+        """
         batch_time = AverageMeter()
         data_time = AverageMeter()
         loss = AverageMeter()  
@@ -158,26 +175,40 @@ class Trainer():
 
         for i, batch_data in enumerate(self.test_loader):
             
+            # 3
+            # fetch data including the ground truth
             (joint_feats_thisbatch, targets_thisbatch, 
              video_thisbatch, clip_thisbatch, 
              person_labels, ball_feats) = batch_data
            
             data_time.update(time.time() - batch_start_time)
             
+            # ???
+            # maybe it's about the clustering
             # normalize the prototypes
             with torch.no_grad():
                 w = self.model.module.prototypes.weight.data.clone()
                 w = nn.functional.normalize(w, dim=1, p=2)
                 self.model.module.prototypes.weight.copy_(w)
-                    
+            
+            # 1       
             # model forward 
+            # pred_logits_thisbatch, group
+            # (layers, scales, B, logits)
+            # pred_logits_person, person actions
+            # (layers, B*N, logits)
             pred_logits_thisbatch, pred_logits_person, _ = self.model(joint_feats_thisbatch, ball_feats)
             
-            
+            # 2
+            # group and person ground truth respectively
+            # person_labels transformed to (B*N, 1)
             # measure accuracy and record loss 
             targets_thisbatch = targets_thisbatch.to(pred_logits_thisbatch[0][0].device)
             person_labels = person_labels.flatten(0,1).to(pred_logits_thisbatch[0][0].device)
             
+            # to 218
+            # get loss and 4 precisions
+            # update average with this batch
             loss_thisbatch, prec1, prec3, prec1_person, prec3_person = self.loss_acc_compute(
                 pred_logits_thisbatch, targets_thisbatch, pred_logits_person, person_labels)
             
