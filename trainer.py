@@ -12,7 +12,7 @@ torch.autograd.set_detect_anomaly(True)
 
 from utils.common_utils import AverageMeter, accuracy
 
-
+from tqdm import tqdm
 
 class Trainer():
     def __init__(self, args, model, logger, criterion, criterion_person, optimizer, 
@@ -45,7 +45,7 @@ class Trainer():
         self.criterion.train() 
         self.criterion_person.train()
 
-        for i, batch_data in enumerate(self.train_loader):
+        for i, batch_data in tqdm(enumerate(self.train_loader), total=len(self.train_loader)):
             
             (joint_feats_thisbatch, targets_thisbatch, 
              video_thisbatch, clip_thisbatch, 
@@ -173,7 +173,7 @@ class Trainer():
         
         results = dict()
 
-        for i, batch_data in enumerate(self.test_loader):
+        for i, batch_data in tqdm(enumerate(self.test_loader), total=len(self.test_loader)):
             
             # 3
             # fetch data including the ground truth

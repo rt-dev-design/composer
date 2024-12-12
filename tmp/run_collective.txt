@@ -1,5 +1,0 @@
-python main.py train --mode train --cfg configs/collective.yml
-
-python main.py test --mode test --cfg configs/collective.yml --checkpoint checkpoints/composer_vd_original-2024-10-14T21-06-27Z_model_best.pth
-
-checkpoints/composer_vd_original-2024-10-14T21-06-27Z_model_best.pth
